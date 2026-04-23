@@ -4,15 +4,17 @@ import re
 
 st.set_page_config(page_title="BOM 多批次異動分析矩陣", layout="wide")
 
-# --- 側邊欄 CSS ---
+# --- 側邊欄與表格置中樣式微調 ---
 st.markdown("""
     <style>
     [data-testid="stSidebar"] { min-width: 150px; max-width: 180px; }
     .stCheckbox { margin-bottom: -12px; }
+    /* 強制讓表格中的內容置中 (特別是數字欄位) */
+    [data-testid="stDataFrame"] td { text-align: center ! prophetic; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📊 BOM 多批次異動分析矩陣 (對齊舊工具版)")
+st.title("📊 BOM 多批次異動分析矩陣")
 
 with st.sidebar:
     st.subheader("階層篩選")
@@ -21,7 +23,7 @@ with st.sidebar:
         if st.checkbox(f"L{i}", value=True if i in [3, 4, 5] else False, key=f"ML{i}"):
             selected_levels.append(i)
 
-# --- 核心解析器：延用兩筆比對的成功經驗 ---
+# --- 核心解析器 ---
 def parse_bom_expert(file_bytes):
     try: text = file_bytes.decode("big5")
     except: text = file_bytes.decode("utf-8", errors="ignore")
@@ -52,11 +54,9 @@ if len(files) >= 2:
     all_maps = {f.name: parse_bom_expert(f.getvalue()) for f in files}
     base_file = st.selectbox("請指定基準 BOM (Master):", options=list(all_maps.keys()))
     
-    # 1. 取得所有位置聯集
     all_refs = sorted(list(set().union(*(m.keys() for m in all_maps.values()))), 
                       key=lambda x: (re.sub(r'\d+', '', x), int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0))
 
-    # 2. 逐一比對位置的變更行為
     raw_list = []
     for ref in all_refs:
         base_item = all_maps[base_file].get(ref)
@@ -65,9 +65,7 @@ if len(files) >= 2:
 
         if level not in selected_levels: continue
 
-        # 判定變更狀態 (相對於基準檔)
         file_pns = {}
-        diff_flag = False
         status = "✅ 無差異"
         
         for fname in all_maps:
@@ -85,19 +83,24 @@ if len(files) >= 2:
 
     if raw_list:
         df_raw = pd.DataFrame(raw_list)
-        # 3. 【關鍵】合併相同變更行為的位置
         group_keys = ["變更項目", "階層", "規格描述"] + list(all_maps.keys())
         summary = df_raw.groupby(group_keys)["ref_id"].apply(lambda x: ".".join(x)).reset_index()
         
-        # 4. 欄位排序：變更項目 | 階層 | 位置 | 規格 | 各版本料號
-        cols = ["變更項目", "階層", "ref_id"] + list(all_maps.keys()) + ["規格描述"]
+        # --- 修正順序：階層移到最左邊 ---
+        cols = ["階層", "變更項目", "ref_id"] + list(all_maps.keys()) + ["規格描述"]
         summary = summary[cols]
         summary.rename(columns={"ref_id": "位置"}, inplace=True)
 
         def style_matrix(s):
+            # 與基準檔不同者標註紅色
             return ['color: #cf1322; font-weight: bold;' if v != s[base_file] else '' for v in s]
 
         st.subheader(f"📋 異動分析矩陣 (基準: {base_file})")
-        st.dataframe(summary.style.apply(style_matrix, axis=1, subset=list(all_maps.keys())), use_container_width=True)
+        # 顯示 DataFrame 並套用置中與顏色樣式
+        st.dataframe(
+            summary.style.apply(style_matrix, axis=1, subset=list(all_maps.keys()))
+            .set_properties(**{'text-align': 'center'}, subset=['階層', '變更項目']), 
+            use_container_width=True
+        )
     else:
         st.success("✨ 選定階層內所有 BOM 完全一致。")

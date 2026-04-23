@@ -4,17 +4,16 @@ import re
 
 st.set_page_config(page_title="BOM 多批次異動分析矩陣", layout="wide")
 
-# --- 側邊欄與表格置中樣式微調 ---
+# --- 樣式設定：包含置中與自定義捲軸 ---
 st.markdown("""
     <style>
     [data-testid="stSidebar"] { min-width: 150px; max-width: 180px; }
     .stCheckbox { margin-bottom: -12px; }
-    /* 強制讓表格中的內容置中 (特別是數字欄位) */
-    [data-testid="stDataFrame"] td { text-align: center ! prophetic; }
+    [data-testid="stDataFrame"] td { text-align: center !important; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📊 BOM 多批次異動分析矩陣")
+st.title("📊 BOM 多批次異動分析矩陣 (視覺優化版)")
 
 with st.sidebar:
     st.subheader("階層篩選")
@@ -54,10 +53,11 @@ if len(files) >= 2:
     all_maps = {f.name: parse_bom_expert(f.getvalue()) for f in files}
     base_file = st.selectbox("請指定基準 BOM (Master):", options=list(all_maps.keys()))
     
+    # 取得所有位置聯集
     all_refs = sorted(list(set().union(*(m.keys() for m in all_maps.values()))), 
                       key=lambda x: (re.sub(r'\d+', '', x), int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0))
 
-    raw_list = []
+    final_data = []
     for ref in all_refs:
         base_item = all_maps[base_file].get(ref)
         level = base_item['Level'] if base_item else next((all_maps[f][ref]['Level'] for f in all_maps if ref in all_maps[f]), None)
@@ -79,28 +79,48 @@ if len(files) >= 2:
                 elif base_item and item and item['PN'] != base_item['PN']: status = "🔄 變更"
         
         if status != "✅ 無差異":
-            raw_list.append({"ref_id": ref, "變更項目": status, "階層": level, "規格描述": desc, **file_pns})
+            # 直接存入位置，不再進行合併，達成「以位置分行」
+            final_data.append({"階層": level, "變更項目": status, "位置": ref, "規格描述": desc, **file_pns})
 
-    if raw_list:
-        df_raw = pd.DataFrame(raw_list)
-        group_keys = ["變更項目", "階層", "規格描述"] + list(all_maps.keys())
-        summary = df_raw.groupby(group_keys)["ref_id"].apply(lambda x: ".".join(x)).reset_index()
+    if final_data:
+        df = pd.DataFrame(final_data)
         
-        # --- 修正順序：階層移到最左邊 ---
-        cols = ["階層", "變更項目", "ref_id"] + list(all_maps.keys()) + ["規格描述"]
-        summary = summary[cols]
-        summary.rename(columns={"ref_id": "位置"}, inplace=True)
+        # 欄位排序
+        cols = ["階層", "變更項目", "位置"] + list(all_maps.keys()) + ["規格描述"]
+        df = df[cols]
 
-        def style_matrix(s):
-            # 與基準檔不同者標註紅色
-            return ['color: #cf1322; font-weight: bold;' if v != s[base_file] else '' for v in s]
+        # 定義顏色邏輯
+        def apply_row_styles(row):
+            styles = [''] * len(row)
+            status = row['變更項目']
+            
+            # 根據狀態決定整行顏色 (或指定顏色欄位)
+            bg_color = ""
+            text_color = ""
+            if status == "🔄 變更":
+                bg_color = "#fffbe6" # 淺黃
+                text_color = "#856404" # 深褐
+            elif status == "🆕 新增":
+                bg_color = "#e6f7ff" # 淺藍
+                text_color = "#0050b3" # 深藍
+            elif status == "❌ 刪除":
+                bg_color = "#fff1f0" # 淺紅
+                text_color = "#cf1322" # 深紅
+            
+            # 套用到料號欄位，並針對與基準不同者加粗
+            for i, col_name in enumerate(row.index):
+                if col_name in all_maps.keys():
+                    if row[col_name] != row[base_file]:
+                        styles[i] = f"background-color: {bg_color}; color: {text_color}; font-weight: bold;"
+                elif col_name in ["階層", "變更項目", "位置"]:
+                    styles[i] = f"background-color: {bg_color}; color: {text_color};"
+            return styles
 
-        st.subheader(f"📋 異動分析矩陣 (基準: {base_file})")
-        # 顯示 DataFrame 並套用置中與顏色樣式
+        st.subheader(f"📋 異動矩陣 (以 {base_file} 為基準，已按位置展開)")
         st.dataframe(
-            summary.style.apply(style_matrix, axis=1, subset=list(all_maps.keys()))
-            .set_properties(**{'text-align': 'center'}, subset=['階層', '變更項目']), 
-            use_container_width=True
+            df.style.apply(apply_row_styles, axis=1), 
+            use_container_width=True,
+            height=600
         )
     else:
         st.success("✨ 選定階層內所有 BOM 完全一致。")
